@@ -1,4 +1,4 @@
-# database_manager.py - PostgreSQL Database Manager (psycopg v3)
+# database_manager.py - PostgreSQL Database Manager (psycopg v3).
 
 import os
 import json
