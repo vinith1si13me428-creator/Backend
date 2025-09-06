@@ -1,0 +1,84 @@
+# Core FastAPI and Web Server
+fastapi[standard]==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+
+# Async HTTP Client for Delta Exchange API
+aiohttp==3.9.1
+asyncio-mqtt==0.16.1
+
+# Data Processing and Analysis
+pandas==2.1.4
+numpy==1.24.4
+TA-Lib==0.4.28
+
+# Database and ORM
+SQLAlchemy[asyncio]==2.0.23
+psycopg[binary]==3.1.13
+alembic==1.13.1
+
+# Data Validation and Configuration
+pydantic==2.5.1
+pydantic-settings==2.1.0
+python-dotenv==1.0.0
+
+# System Monitoring
+psutil==5.9.6
+
+# Optional: Caching and Performance
+redis==5.0.1
+fastapi-cache2[redis]==0.2.1
+
+# Optional: Rate Limiting
+slowapi==0.1.9
+
+# Optional: Enhanced JSON Performance  
+orjson==3.9.10
+
+# Development and Testing (Optional)
+pytest==7.4.3
+pytest-asyncio==0.21.1
+httpx==0.25.2
+
+# Logging and Monitoring
+structlog==23.2.0
+
+# Security and Authentication (if needed)
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# Data Visualization (Optional)
+plotly==5.17.0
+matplotlib==3.8.2
+
+# Environment and Utilities
+pathlib2==2.3.7
+typing-extensions==4.8.0
+
+# WebSocket Support
+websockets==12.0
+
+# Date and Time Utilities
+python-dateutil==2.8.2
+pytz==2023.3
+
+# HTTP Status Codes
+httpx-sse==0.4.0
+
+# Additional Data Types for Pydantic
+pydantic-extra-types==2.2.0
+
+# Email Validation (if using email features)
+email-validator==2.1.0
+
+# File I/O and Serialization
+cloudpickle==3.0.0
+
+# Retry Logic for API Calls
+tenacity==8.2.3
+
+# Cryptocurrency-specific utilities
+ccxt==4.1.40
+
+# Additional async utilities
+anyio==4.1.0
