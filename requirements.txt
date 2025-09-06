@@ -8,8 +8,8 @@ aiohttp==3.9.1
 asyncio-mqtt==0.16.1
 
 # Data Processing and Analysis
-pandas==2.1.4
-numpy==1.24.4
+pandas>=2.2.0
+numpy>=1.26.4
 TA-Lib==0.4.28
 
 # Database and ORM
