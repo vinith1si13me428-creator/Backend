@@ -95,7 +95,7 @@ class EMAStrategy(BaseStrategy):
                     continue
                 
                 # 5. Calculate enhanced signals with market condition awareness
-                signals = await self.calculate_enhanced_signals_with_conditions()
+                signals = await self.calculate_signals()
                 
                 # 6. Check existing position
                 has_position = await self._check_existing_position()
@@ -205,7 +205,7 @@ class EMAStrategy(BaseStrategy):
         except Exception as e:
             self.logger.error(f"❌ Market condition detection error: {e}")
 
-    async def calculate_enhanced_signals_with_conditions(self) -> Dict[str, Any]:
+    async def calculate_signals(self) -> Dict[str, Any]:
         """Calculate EMA signals with market condition awareness"""
         try:
             # Basic EMA crossover calculation
