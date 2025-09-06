@@ -1,84 +1,84 @@
 # Core FastAPI and Web Server
-fastapi[standard]==0.104.1
-uvicorn[standard]==0.24.0
-python-multipart==0.0.6
+fastapi[standard]
+uvicorn[standard]
+python-multipart
 
 # Async HTTP Client for Delta Exchange API
-aiohttp==3.9.1
-asyncio-mqtt==0.16.1
+aiohttp
+asyncio-mqtt
 
 # Data Processing and Analysis
-pandas>=2.2.0
-numpy>=1.26.4
-TA-Lib==0.4.28
+pandas
+numpy
+TA-Lib
 
 # Database and ORM
-SQLAlchemy[asyncio]==2.0.23
-psycopg[binary]==3.1.13
-alembic==1.13.1
+SQLAlchemy[asyncio]
+psycopg[binary]
+alembic
 
 # Data Validation and Configuration
-pydantic==2.5.1
-pydantic-settings==2.1.0
-python-dotenv==1.0.0
+pydantic
+pydantic-settings
+python-dotenv
 
 # System Monitoring
-psutil==5.9.6
+psutil
 
 # Optional: Caching and Performance
-redis==5.0.1
-fastapi-cache2[redis]==0.2.1
+redis
+fastapi-cache2[redis]
 
 # Optional: Rate Limiting
-slowapi==0.1.9
+slowapi
 
 # Optional: Enhanced JSON Performance  
-orjson==3.9.10
+orjson
 
 # Development and Testing (Optional)
-pytest==7.4.3
-pytest-asyncio==0.21.1
-httpx==0.25.2
+pytest
+pytest-asyncio
+httpx
 
 # Logging and Monitoring
-structlog==23.2.0
+structlog
 
 # Security and Authentication (if needed)
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
+python-jose[cryptography]
+passlib[bcrypt]
 
 # Data Visualization (Optional)
-plotly==5.17.0
-matplotlib==3.8.2
+plotly
+matplotlib
 
 # Environment and Utilities
-pathlib2==2.3.7
+pathlib2
 typing-extensions
 
 # WebSocket Support
-websockets==12.0
+websockets
 
 # Date and Time Utilities
-python-dateutil==2.8.2
-pytz==2023.3
+python-dateutil
+pytz
 
 # HTTP Status Codes
-httpx-sse==0.4.0
+httpx-sse
 
 # Additional Data Types for Pydantic
-pydantic-extra-types==2.2.0
+pydantic-extra-types
 
 # Email Validation (if using email features)
-email-validator==2.1.0
+email-validator
 
 # File I/O and Serialization
-cloudpickle==3.0.0
+cloudpickle
 
 # Retry Logic for API Calls
-tenacity==8.2.3
+tenacity
 
 # Cryptocurrency-specific utilities
-ccxt==4.1.40
+ccxt
 
 # Additional async utilities
 anyio
