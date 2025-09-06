@@ -92,6 +92,22 @@ except ImportError:
 load_dotenv()
 
 # Local Storage Database Manager Class (No External DB Dependencies)
+
+# Create FastAPI app
+app = FastAPI(title="VY Trading Bot API")
+
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://vy-delta-trader-2.onrender.com",
+        "http://localhost:3000",
+        "https://localhost:3000"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 import json
 from datetime import datetime
 
