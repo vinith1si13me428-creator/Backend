@@ -1,32 +1,27 @@
-# database_manager.py - PostgreSQL Database Manager (psycopg v3).
-
 import os
 import json
 import time
 import logging
+import psycopg
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from pathlib import Path
 from contextlib import contextmanager
 
-try:
-    import psycopg
-    PSYCOPG_AVAILABLE = True
-except ImportError:
-    PSYCOPG_AVAILABLE = False
-
 class DatabaseManager:
     """Database manager that supports both PostgreSQL and local files"""
 
-    def __init__(self, storage_dir: str = None):
+    def __init__(self, storage_dir: str = None, force_local: bool = False):
         self.logger = logging.getLogger(__name__)
         
-        # Check if PostgreSQL credentials are available
+        # Check if PostgreSQL should be used
         self.database_url = os.getenv("DATABASE_URL")
-        self.use_postgres = PSYCOPG_AVAILABLE and self.database_url
+        self.use_postgres = (not force_local and 
+                           self.database_url is not None and 
+                           self._test_postgres_connection())
         
         if self.use_postgres:
-            self.logger.info("🌐 PostgreSQL DATABASE_URL found - will use external database")
+            self.logger.info("🐘 PostgreSQL DATABASE_URL found - will use external database")
         else:
             # Fallback to local file storage
             self.storage_dir = Path(storage_dir or "./.state")
@@ -34,6 +29,19 @@ class DatabaseManager:
             (self.storage_dir / "strategies").mkdir(exist_ok=True)
             (self.storage_dir / "trades").mkdir(exist_ok=True)
             self.logger.info("💾 Using local file storage fallback")
+
+    def _test_postgres_connection(self) -> bool:
+        """Test PostgreSQL connection availability"""
+        try:
+            if not self.database_url:
+                return False
+            with psycopg.connect(self.database_url) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                    return True
+        except Exception as e:
+            self.logger.warning(f"⚠️ PostgreSQL connection test failed: {e}")
+            return False
 
     @contextmanager
     def get_db_connection(self):
@@ -112,11 +120,11 @@ class DatabaseManager:
         if not self.use_postgres:
             self.logger.info("✅ Local file storage initialized")
 
-    def _strategy_file(self, symbol: str):
+    def _strategy_file(self, symbol: str) -> Path:
         """Get strategy state file path (for local storage)"""
         return self.storage_dir / "strategies" / f"{symbol}.json"
 
-    def _trades_file(self):
+    def _trades_file(self) -> Path:
         """Get trades file path (for local storage)"""
         return self.storage_dir / "trades" / "trades.json"
 
@@ -215,10 +223,9 @@ class DatabaseManager:
                     
                 self.logger.debug("✅ Trade record saved to PostgreSQL")
             else:
-                # Save to local file
+                # Save to local file (existing implementation)
                 trades_file = self._trades_file()
                 
-                # Load existing trades
                 trades = []
                 if trades_file.exists():
                     try:
@@ -226,17 +233,14 @@ class DatabaseManager:
                     except:
                         trades = []
 
-                # Add new trade with timestamp
                 trade_data = dict(trade_data)
                 trade_data["timestamp"] = datetime.now().isoformat()
                 trade_data["id"] = len(trades) + 1
                 trades.append(trade_data)
 
-                # Keep only last 1000 trades
                 if len(trades) > 1000:
                     trades = trades[-1000:]
 
-                # Save back to file
                 trades_file.write_text(json.dumps(trades, indent=2))
                 self.logger.debug("✅ Trade record saved locally")
 
@@ -295,7 +299,7 @@ class DatabaseManager:
                         else:
                             return []
             else:
-                # Get from local file
+                # Get from local file (existing implementation)
                 trades_file = self._trades_file()
                 if not trades_file.exists():
                     return []
@@ -338,7 +342,7 @@ class DatabaseManager:
                                 "total_pnl": 0.0
                             }
             else:
-                # Get from local file
+                # Get from local file (existing implementation)
                 trades = await self.get_recent_trades(limit=10000)
                 if not trades:
                     return {
@@ -376,94 +380,17 @@ class DatabaseManager:
         else:
             self.logger.info("✅ Local file storage closed")
 
-    # Additional utility methods (adapted for both storage types)
-    def get_all_strategy_symbols(self) -> List[str]:
-        """Get list of all symbols with saved states"""
-        try:
-            if self.use_postgres:
-                with self.get_db_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT symbol FROM strategy_states")
-                        results = cur.fetchall()
-                        return [row[0] for row in results]
-            else:
-                strategy_dir = self.storage_dir / "strategies"
-                return [f.stem for f in strategy_dir.glob("*.json")]
-        except:
-            return []
-
-    def clear_strategy_state(self, symbol: str) -> bool:
-        """Clear strategy state for a symbol"""
-        try:
-            if self.use_postgres:
-                with self.get_db_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute("DELETE FROM strategy_states WHERE symbol = %s", (symbol,))
-                    conn.commit()
-                    return cur.rowcount > 0
-            else:
-                file_path = self._strategy_file(symbol)
-                if file_path.exists():
-                    file_path.unlink()
-                    return True
-                return False
-        except:
-            return False
-
-    def backup_data(self, backup_path: str = None) -> bool:
-        """Create backup of all data"""
-        try:
-            if self.use_postgres:
-                # For PostgreSQL, we could export data to JSON files
-                backup_path = backup_path or f"postgres_backup_{int(time.time())}"
-                self.logger.info(f"⚠️ PostgreSQL backup not implemented yet")
-                return False
-            else:
-                import shutil
-                backup_path = backup_path or f"backup_{int(time.time())}"
-                backup_dir = Path(backup_path)
-                shutil.copytree(self.storage_dir, backup_dir, dirs_exist_ok=True)
-                self.logger.info(f"✅ Data backed up to {backup_dir}")
-                return True
-        except Exception as e:
-            self.logger.error(f"❌ Backup failed: {e}")
-            return False
-
-    # Additional methods for compatibility with existing TradeJournal
-    async def update_trade_closure(self, symbol: str, side: str, exit_price: float, profit_loss: float, status: str = 'Closed') -> bool:
-        """Update trade when closed - for compatibility with existing code"""
-        try:
-            if self.use_postgres:
-                with self.get_db_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute("""
-                            UPDATE trades 
-                            SET exit_price = %s, profit_loss = %s, status = %s
-                            WHERE symbol = %s AND side = %s AND status = 'Open'
-                            ORDER BY created_at DESC
-                            LIMIT 1
-                        """, (exit_price, profit_loss, status, symbol, side))
-                    conn.commit()
-                    return cur.rowcount > 0
-            else:
-                # For local files, we'd need to implement this
-                self.logger.warning("Trade closure update not implemented for local storage")
-                return False
-        except Exception as e:
-            self.logger.error(f"❌ Failed to update trade closure: {e}")
-            return False
-
-# Test connection on initialization
+# Test connection on import
 def test_connection():
     """Test database connection"""
     try:
         database_url = os.getenv("DATABASE_URL")
-        if database_url and PSYCOPG_AVAILABLE:
+        if database_url:
             with psycopg.connect(database_url) as conn:
                 print("✅ PostgreSQL database connection successful")
                 return True
         else:
-            print("⚠️ PostgreSQL not configured, will use local storage")
+            print("⚠️ DATABASE_URL not found, will use local storage")
             return False
     except Exception as e:
         print(f"❌ PostgreSQL database connection failed: {e}")
