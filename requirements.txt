@@ -53,7 +53,7 @@ matplotlib==3.8.2
 
 # Environment and Utilities
 pathlib2==2.3.7
-typing-extensions==4.8.0
+typing-extensions
 
 # WebSocket Support
 websockets==12.0
@@ -81,4 +81,4 @@ tenacity==8.2.3
 ccxt==4.1.40
 
 # Additional async utilities
-anyio==4.1.0
+anyio
