@@ -414,7 +414,7 @@ async def lifespan(app: FastAPI):
         logger.info("📡 Initializing Delta API client...")
         delta_client = DeltaAPIClient(credentials)
         
-        logger.info("🗄️ Initializing database manager (LOCAL STORAGE)...")
+        logger.info("🗄️ Initializing database manager (POSTGRESQLLOCAL STORAGE)...")
         db_manager = DatabaseManager()  # This now uses local files
         await db_manager.init_database()
         
@@ -755,10 +755,10 @@ async def root():
 async def health_check():
     """Comprehensive system health check"""
     try:
-        health_status = {
-            "status": "healthy",
-            "timestamp": time.time(),
-            "components": {}
+        health_status["components"]["database"] = {
+            "status": "connected",
+            "type": "postgresql" if db_manager.use_postgres else "local_storage"
+            
         }
 
         # Check Delta API
