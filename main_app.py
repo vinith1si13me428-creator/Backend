@@ -24,6 +24,14 @@ from risk_manager import RiskManager
 from order_executor import OrderExecutor
 from websocket_manager import DeltaWebSocketManager
 
+try:
+    import psycopg
+    from contextlib import contextmanager
+    PSYCOPG_AVAILABLE = True
+except ImportError:
+    PSYCOPG_AVAILABLE = False
+    print("⚠️ psycopg not available - PostgreSQL features disabled")
+    
 # Import current directory strategies (will be moved to strategies folder)
 try:
     from SMC_Strategy import SMC_Strategy
@@ -101,146 +109,364 @@ import json
 from datetime import datetime
 
 class DatabaseManager:
-    """Local file-based database manager - no external PostgreSQL needed"""
-    
-    def __init__(self, storage_dir: str = None):
-        self.storage_dir = Path(storage_dir or "./.state")
-        self.storage_dir.mkdir(exist_ok=True)
-        
-        # Create subdirectories
-        (self.storage_dir / "strategies").mkdir(exist_ok=True)
-        (self.storage_dir / "trades").mkdir(exist_ok=True)
-        
+    """Database manager that supports both PostgreSQL and local files as fallback"""
+
+    def __init__(self, storage_dir: str = None, force_local: bool = False):
         self.logger = logging.getLogger(__name__)
         
-    async def init_database(self):
-        """Initialize local storage directories"""
-        try:
-            # Ensure directories exist
+        # Check if PostgreSQL should be used
+        self.database_url = os.getenv("DATABASE_URL")
+        self.use_postgres = (not force_local and 
+                           self.database_url is not None and 
+                           self._test_postgres_connection())
+        
+        if self.use_postgres:
+            self.logger.info("🐘 PostgreSQL DATABASE_URL found - using external database")
+        else:
+            # Fallback to local file storage
+            self.storage_dir = Path(storage_dir or "./.state")
             self.storage_dir.mkdir(exist_ok=True)
             (self.storage_dir / "strategies").mkdir(exist_ok=True)
             (self.storage_dir / "trades").mkdir(exist_ok=True)
-            
-            self.logger.info("✅ Local file storage initialized successfully")
+            self.logger.info("💾 Using local file storage fallback")
+
+    def _test_postgres_connection(self) -> bool:
+        """Test PostgreSQL connection availability"""
+        try:
+            if not self.database_url:
+                return False
+            with psycopg.connect(self.database_url) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                    return True
         except Exception as e:
-            self.logger.error(f"❌ Local storage initialization failed: {e}")
+            self.logger.warning(f"⚠️ PostgreSQL connection test failed: {e}")
+            return False
+
+    @contextmanager
+    def get_db_connection(self):
+        """Get database connection with error handling"""
+        if not self.use_postgres:
+            raise Exception("PostgreSQL not available")
+            
+        try:
+            conn = psycopg.connect(self.database_url)
+            yield conn
+        except Exception as e:
+            self.logger.error(f"❌ Database connection error: {e}")
             raise
+        finally:
+            try:
+                conn.close()
+            except:
+                pass
+
+    async def init_database(self):
+        """Initialize database connection and tables"""
+        if self.use_postgres:
+            try:
+                with self.get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        # Strategy states table
+                        cur.execute("""
+                            CREATE TABLE IF NOT EXISTS strategy_states (
+                                symbol VARCHAR(20) PRIMARY KEY,
+                                state_data JSONB NOT NULL,
+                                created_at TIMESTAMP DEFAULT NOW(),
+                                updated_at TIMESTAMP DEFAULT NOW()
+                            )
+                        """)
+                        
+                        # Trades table
+                        cur.execute("""
+                            CREATE TABLE IF NOT EXISTS trades (
+                                id SERIAL PRIMARY KEY,
+                                symbol VARCHAR(20),
+                                side VARCHAR(10),
+                                size DECIMAL,
+                                entry_price DECIMAL,
+                                exit_price DECIMAL,
+                                sl_price DECIMAL,
+                                tp_price DECIMAL,
+                                leverage INTEGER,
+                                profit_loss DECIMAL,
+                                strategy VARCHAR(50),
+                                status VARCHAR(20),
+                                instance_id VARCHAR(50),
+                                pnl DECIMAL,
+                                trade_data JSONB,
+                                created_at TIMESTAMP DEFAULT NOW()
+                            )
+                        """)
+                        
+                        # Create indexes for better performance
+                        cur.execute("CREATE INDEX IF NOT EXISTS idx_strategy_states_symbol ON strategy_states(symbol)")
+                        cur.execute("CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol)")
+                        cur.execute("CREATE INDEX IF NOT EXISTS idx_trades_created_at ON trades(created_at)")
+                        cur.execute("CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy)")
+                        cur.execute("CREATE INDEX IF NOT EXISTS idx_trades_pnl ON trades(pnl)")
+                    
+                    conn.commit()
+                    self.logger.info("✅ PostgreSQL database initialized successfully")
+                    
+            except Exception as e:
+                self.logger.error(f"❌ PostgreSQL initialization failed: {e}")
+                self.logger.info("🔄 Falling back to local storage")
+                self.use_postgres = False
+                # Initialize local storage fallback
+                self.storage_dir = Path("./.state")
+                self.storage_dir.mkdir(exist_ok=True)
+                (self.storage_dir / "strategies").mkdir(exist_ok=True)
+                (self.storage_dir / "trades").mkdir(exist_ok=True)
+        
+        if not self.use_postgres:
+            self.logger.info("✅ Local file storage initialized")
 
     def _strategy_file(self, symbol: str) -> Path:
-        """Get strategy state file path"""
+        """Get strategy state file path (for local storage fallback)"""
         return self.storage_dir / "strategies" / f"{symbol}.json"
 
     def _trades_file(self) -> Path:
-        """Get trades file path"""
+        """Get trades file path (for local storage fallback)"""
         return self.storage_dir / "trades" / "trades.json"
 
     async def save_strategy_state(self, symbol: str, state_data: Dict[str, Any]):
-        """Save strategy state to local file - FIXED METHOD PLACEMENT"""
+        """Save strategy state to PostgreSQL or local file"""
         try:
-            # Add timestamp
+            # Add metadata
             state_data = dict(state_data)
             state_data["_saved_at"] = time.time()
             state_data["_updated_at"] = datetime.now().isoformat()
-            
-            file_path = self._strategy_file(symbol)
-            file_path.write_text(json.dumps(state_data, indent=2))
-            
-            self.logger.debug(f"✅ Strategy state saved for {symbol}")
-            
+
+            if self.use_postgres:
+                # Save to PostgreSQL
+                with self.get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO strategy_states (symbol, state_data, updated_at) 
+                            VALUES (%s, %s, NOW())
+                            ON CONFLICT (symbol) DO UPDATE SET 
+                            state_data = EXCLUDED.state_data, updated_at = NOW()
+                        """, (symbol, json.dumps(state_data)))
+                    conn.commit()
+                    
+                self.logger.debug(f"✅ Strategy state saved to PostgreSQL for {symbol}")
+            else:
+                # Save to local file
+                file_path = self._strategy_file(symbol)
+                file_path.write_text(json.dumps(state_data, indent=2))
+                self.logger.debug(f"✅ Strategy state saved locally for {symbol}")
+
         except Exception as e:
             self.logger.error(f"❌ Failed to save strategy state for {symbol}: {e}")
-            # Don't raise - let strategy continue
 
     async def load_strategy_state(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """Load strategy state from local file"""
+        """Load strategy state from PostgreSQL or local file"""
         try:
-            file_path = self._strategy_file(symbol)
-            
-            if not file_path.exists():
-                return None
+            if self.use_postgres:
+                # Load from PostgreSQL
+                with self.get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT state_data FROM strategy_states WHERE symbol = %s", (symbol,))
+                        result = cur.fetchone()
+                        
+                        if result:
+                            state_data = result[0]
+                            # Check if already a dict (from JSONB) or needs JSON parsing
+                            if isinstance(state_data, dict):
+                                return state_data
+                            else:
+                                return json.loads(state_data)
+                        return None
+            else:
+                # Load from local file
+                file_path = self._strategy_file(symbol)
+                if not file_path.exists():
+                    return None
                 
-            data = json.loads(file_path.read_text())
-            self.logger.debug(f"✅ Strategy state loaded for {symbol}")
-            return data
-            
+                data = json.loads(file_path.read_text())
+                self.logger.debug(f"✅ Strategy state loaded locally for {symbol}")
+                return data
+
         except Exception as e:
             self.logger.error(f"❌ Failed to load strategy state for {symbol}: {e}")
             return None
 
     async def save_trade(self, trade_data: Dict[str, Any]):
-        """Save trade record to local file"""
+        """Save trade record to PostgreSQL or local file"""
         try:
-            trades_file = self._trades_file()
-            
-            # Load existing trades
-            trades = []
-            if trades_file.exists():
-                try:
-                    trades = json.loads(trades_file.read_text())
-                except:
-                    trades = []
-            
-            # Add new trade with timestamp
-            trade_data = dict(trade_data)
-            trade_data["timestamp"] = datetime.now().isoformat()
-            trade_data["id"] = len(trades) + 1
-            
-            trades.append(trade_data)
-            
-            # Keep only last 1000 trades
-            if len(trades) > 1000:
-                trades = trades[-1000:]
-            
-            # Save back to file
-            trades_file.write_text(json.dumps(trades, indent=2))
-            
-            self.logger.debug("✅ Trade record saved")
-            
+            if self.use_postgres:
+                # Save to PostgreSQL
+                with self.get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO trades 
+                            (symbol, side, size, entry_price, exit_price, sl_price, tp_price, leverage, 
+                             profit_loss, strategy, status, instance_id, pnl, trade_data, created_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """, (
+                            trade_data.get("symbol"),
+                            trade_data.get("side"),
+                            float(trade_data.get("size", 0)) if trade_data.get("size") else None,
+                            float(trade_data.get("entry_price", 0)) if trade_data.get("entry_price") else None,
+                            float(trade_data.get("exit_price", 0)) if trade_data.get("exit_price") else None,
+                            float(trade_data.get("sl_price", 0)) if trade_data.get("sl_price") else None,
+                            float(trade_data.get("tp_price", 0)) if trade_data.get("tp_price") else None,
+                            int(trade_data.get("leverage", 1)) if trade_data.get("leverage") else None,
+                            float(trade_data.get("profit_loss", 0)) if trade_data.get("profit_loss") else None,
+                            trade_data.get("strategy"),
+                            trade_data.get("status"),
+                            trade_data.get("instance_id"),
+                            float(trade_data.get("pnl", 0)) if trade_data.get("pnl") else None,
+                            json.dumps(trade_data),
+                            datetime.now()
+                        ))
+                    conn.commit()
+                    
+                self.logger.debug("✅ Trade record saved to PostgreSQL")
+            else:
+                # Save to local file (fallback)
+                trades_file = self._trades_file()
+                
+                trades = []
+                if trades_file.exists():
+                    try:
+                        trades = json.loads(trades_file.read_text())
+                    except:
+                        trades = []
+
+                trade_data = dict(trade_data)
+                trade_data["timestamp"] = datetime.now().isoformat()
+                trade_data["id"] = len(trades) + 1
+                trades.append(trade_data)
+
+                if len(trades) > 1000:
+                    trades = trades[-1000:]
+
+                trades_file.write_text(json.dumps(trades, indent=2))
+                self.logger.debug("✅ Trade record saved locally")
+
         except Exception as e:
             self.logger.error(f"❌ Failed to save trade: {e}")
 
     async def get_recent_trades(self, limit: int = 100) -> List[Dict[str, Any]]:
-        """Get recent trades from local file"""
+        """Get recent trades from PostgreSQL or local file"""
         try:
-            trades_file = self._trades_file()
-            
-            if not trades_file.exists():
-                return []
-                
-            trades = json.loads(trades_file.read_text())
-            
-            # Return most recent trades
-            return trades[-limit:] if len(trades) > limit else trades
-            
+            if self.use_postgres:
+                # Get from PostgreSQL
+                with self.get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            SELECT * FROM trades 
+                            ORDER BY created_at DESC 
+                            LIMIT %s
+                        """, (limit,))
+                        
+                        trades = cur.fetchall()
+                        if trades:
+                            # Get column names
+                            columns = [desc[0] for desc in cur.description]
+                            trade_records = []
+                            
+                            for trade in trades:
+                                trade_dict = dict(zip(columns, trade))
+                                
+                                # Use the complete trade_data if available, otherwise build from columns
+                                if trade_dict.get("trade_data"):
+                                    if isinstance(trade_dict["trade_data"], dict):
+                                        trade_record = trade_dict["trade_data"]
+                                    else:
+                                        trade_record = json.loads(trade_dict["trade_data"])
+                                else:
+                                    trade_record = {
+                                        "symbol": trade_dict["symbol"],
+                                        "side": trade_dict["side"],
+                                        "size": float(trade_dict["size"]) if trade_dict["size"] else None,
+                                        "entry_price": float(trade_dict["entry_price"]) if trade_dict["entry_price"] else None,
+                                        "exit_price": float(trade_dict["exit_price"]) if trade_dict["exit_price"] else None,
+                                        "sl_price": float(trade_dict["sl_price"]) if trade_dict["sl_price"] else None,
+                                        "tp_price": float(trade_dict["tp_price"]) if trade_dict["tp_price"] else None,
+                                        "leverage": int(trade_dict["leverage"]) if trade_dict["leverage"] else None,
+                                        "profit_loss": float(trade_dict["profit_loss"]) if trade_dict["profit_loss"] else None,
+                                        "strategy": trade_dict["strategy"],
+                                        "status": trade_dict["status"],
+                                        "instance_id": trade_dict["instance_id"],
+                                        "pnl": float(trade_dict["pnl"]) if trade_dict["pnl"] else None
+                                    }
+                                
+                                trade_record["id"] = trade_dict["id"]
+                                trade_record["timestamp"] = trade_dict["created_at"].isoformat() if trade_dict["created_at"] else None
+                                trade_records.append(trade_record)
+                            
+                            return trade_records
+                        else:
+                            return []
+            else:
+                # Get from local file
+                trades_file = self._trades_file()
+                if not trades_file.exists():
+                    return []
+
+                trades = json.loads(trades_file.read_text())
+                return trades[-limit:] if len(trades) > limit else trades
+
         except Exception as e:
             self.logger.error(f"❌ Failed to get recent trades: {e}")
             return []
 
     async def get_trade_statistics(self) -> Dict[str, Any]:
-        """Get trade statistics from local file"""
+        """Get trade statistics from PostgreSQL or local file"""
         try:
-            trades = await self.get_recent_trades(limit=10000)  # Get all trades
-            
-            if not trades:
+            if self.use_postgres:
+                # Get statistics from PostgreSQL
+                with self.get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT pnl FROM trades WHERE pnl IS NOT NULL")
+                        results = cur.fetchall()
+                        
+                        if results:
+                            profit_losses = [float(row[0]) for row in results]
+                            total_trades = len(profit_losses)
+                            winning_trades = sum(1 for pnl in profit_losses if pnl > 0)
+                            total_pnl = sum(profit_losses)
+                            win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+
+                            return {
+                                "total_trades": total_trades,
+                                "winning_trades": winning_trades,
+                                "win_rate": round(win_rate, 2),
+                                "total_pnl": round(total_pnl, 2)
+                            }
+                        else:
+                            return {
+                                "total_trades": 0,
+                                "winning_trades": 0,
+                                "win_rate": 0.0,
+                                "total_pnl": 0.0
+                            }
+            else:
+                # Get from local file
+                trades = await self.get_recent_trades(limit=10000)
+                if not trades:
+                    return {
+                        "total_trades": 0,
+                        "winning_trades": 0,
+                        "win_rate": 0.0,
+                        "total_pnl": 0.0
+                    }
+
+                total_trades = len(trades)
+                winning_trades = sum(1 for trade in trades if float(trade.get("pnl", 0)) > 0)
+                total_pnl = sum(float(trade.get("pnl", 0)) for trade in trades)
+                win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+
                 return {
-                    "total_trades": 0,
-                    "winning_trades": 0,
-                    "win_rate": 0.0,
-                    "total_pnl": 0.0
+                    "total_trades": total_trades,
+                    "winning_trades": winning_trades,
+                    "win_rate": round(win_rate, 2),
+                    "total_pnl": round(total_pnl, 2)
                 }
-            
-            total_trades = len(trades)
-            winning_trades = sum(1 for trade in trades if float(trade.get("pnl", 0)) > 0)
-            total_pnl = sum(float(trade.get("pnl", 0)) for trade in trades)
-            win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
-            
-            return {
-                "total_trades": total_trades,
-                "winning_trades": winning_trades,
-                "win_rate": round(win_rate, 2),
-                "total_pnl": round(total_pnl, 2)
-            }
-            
+
         except Exception as e:
             self.logger.error(f"❌ Failed to get trade statistics: {e}")
             return {
@@ -251,44 +477,44 @@ class DatabaseManager:
             }
 
     async def close(self):
-        """Close file storage (no-op for file-based storage)"""
-        self.logger.info("✅ Local file storage closed")
+        """Close database connection"""
+        if self.use_postgres:
+            self.logger.info("✅ PostgreSQL connection closed")
+        else:
+            self.logger.info("✅ Local file storage closed")
 
     # Additional utility methods
     def get_all_strategy_symbols(self) -> List[str]:
         """Get list of all symbols with saved states"""
         try:
-            strategy_dir = self.storage_dir / "strategies"
-            return [f.stem for f in strategy_dir.glob("*.json")]
+            if self.use_postgres:
+                with self.get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT symbol FROM strategy_states")
+                        results = cur.fetchall()
+                        return [row[0] for row in results]
+            else:
+                strategy_dir = self.storage_dir / "strategies"
+                return [f.stem for f in strategy_dir.glob("*.json")]
         except:
             return []
 
     def clear_strategy_state(self, symbol: str) -> bool:
         """Clear strategy state for a symbol"""
         try:
-            file_path = self._strategy_file(symbol)
-            if file_path.exists():
-                file_path.unlink()
-                return True
-            return False
+            if self.use_postgres:
+                with self.get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("DELETE FROM strategy_states WHERE symbol = %s", (symbol,))
+                    conn.commit()
+                    return True
+            else:
+                file_path = self._strategy_file(symbol)
+                if file_path.exists():
+                    file_path.unlink()
+                    return True
+                return False
         except:
-            return False
-
-    def backup_data(self, backup_path: str = None) -> bool:
-        """Create backup of all data"""
-        try:
-            import shutil
-            
-            backup_path = backup_path or f"backup_{int(time.time())}"
-            backup_dir = Path(backup_path)
-            
-            shutil.copytree(self.storage_dir, backup_dir, dirs_exist_ok=True)
-            
-            self.logger.info(f"✅ Data backed up to {backup_dir}")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"❌ Backup failed: {e}")
             return False
 
 # Global components
@@ -755,19 +981,43 @@ async def root():
 async def health_check():
     """Comprehensive system health check"""
     try:
-        health_status["components"]["database"] = {
-            "status": "connected",
-            "type": "postgresql" if db_manager.use_postgres else "local_storage"
-            
+        # Use the global db_manager instance instead of creating new one
+        global db_manager
+        
+        # Basic health status
+        health_status = {
+            "status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "active_strategies": len(strategy_manager.active_strategies) if strategy_manager else 0,
+            "tracked_symbols": TRACKED_SYMBOLS,  # Use the correct variable name
+            "components": {
+                "database": {
+                    "status": "connected",
+                    "type": "postgresql"  if db_manager.use_postgres else "local_storage"  # ✅ This will work now
+                }
+            },
+            "enhanced_features": {
+                "auto_mode": True,
+                "manual_mode": True,
+                "professional_risk_management": True,
+                "ema_period_flexibility": True,
+                "local_storage": True
+            }
         }
 
         # Check Delta API
         try:
-            balance = await delta_client.get_account_balance()
-            health_status["components"]["delta_api"] = {
-                "status": "connected",
-                "account_balance": balance
-            }
+            if delta_client:
+                balance = await delta_client.get_account_balance()
+                health_status["components"]["delta_api"] = {
+                    "status": "connected",
+                    "account_balance": balance
+                }
+                health_status["account_balance"] = balance
+            else:
+                health_status["components"]["delta_api"] = {
+                    "status": "not_initialized"
+                }
         except Exception as e:
             health_status["components"]["delta_api"] = {
                 "status": "error",
@@ -777,9 +1027,13 @@ async def health_check():
 
         # Check database (local file storage)
         try:
-            test_data = {"health_check": True, "timestamp": time.time()}
-            await db_manager.save_strategy_state("_health_test", test_data)
-            health_status["components"]["database"] = {"status": "connected", "type": "local_storage"}
+            if db_manager:
+                test_data = {"health_check": True, "timestamp": time.time()}
+                await db_manager.save_strategy_state("_health_test", test_data)
+                health_status["components"]["database"]["status"] = "connected"
+                health_status["components"]["database"]["type"] = "local_storage"
+            else:
+                health_status["components"]["database"]["status"] = "not_initialized"
         except Exception as e:
             health_status["components"]["database"] = {
                 "status": "error",
@@ -788,16 +1042,16 @@ async def health_check():
             health_status["status"] = "degraded"
 
         # Check strategy manager
-        health_status["components"]["strategy_manager"] = {
-            "status": "ready",
-            "active_strategies": len(strategy_manager.active_strategies),
-            "registered_strategies": len(strategy_manager.strategy_registry)
-        }
+        if strategy_manager:
+            health_status["components"]["strategy_manager"] = {
+                "status": "ready",
+                "active_strategies": len(strategy_manager.active_strategies),
+                "registered_strategies": len(strategy_manager.strategy_registry)
+            }
 
         # Check WebSocket manager
-        health_status["components"]["websocket_manager"] = {
-            "status": "ready"
-        }
+        if ws_manager:
+            health_status["components"]["websocket_manager"] = {"status": "ready"}
 
         # Optional component checks
         if PORTFOLIO_MANAGER_AVAILABLE:
@@ -808,6 +1062,7 @@ async def health_check():
         return health_status
 
     except Exception as e:
+        print(f"❌ Health check error: {e}")
         raise HTTPException(status_code=500, detail=f"Health check failed: {str(e)}")
 
 @app.get("/api/strategies/available")
@@ -1499,6 +1754,26 @@ app.add_middleware(
 @app.api_route("/health", methods=["GET", "HEAD"])
 async def uptime_health(request: Request):
     return {"status": "ok"}
+
+
+async def get_account_balance():
+    """Get current account balance for risk calculations"""
+    try:
+        if delta_client:
+            wallet_data = await delta_client.get_wallet_balances()
+            if isinstance(wallet_data, list) and len(wallet_data) > 0:
+                # Look for USDT or USD balance
+                for balance in wallet_data:
+                    asset_symbol = balance.get("asset", {}).get("symbol", "")
+                    if asset_symbol in ["USDT", "USD"]:
+                        return float(balance.get("balance", 0))
+                # If no USDT/USD found, return first balance
+                return float(wallet_data[0].get("balance", 0))
+            return 0
+        return 0
+    except Exception as e:
+        print(f"Error fetching account balance: {e}")
+        return 0    
 
 if __name__ == "__main__":
     import uvicorn
